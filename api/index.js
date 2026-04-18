@@ -88,7 +88,7 @@ export default async function handler(req, res) {
   } else {
     // FOR HUMANS: Redirect to your domain with JUST the CA (no /token/)
     // CHANGE THIS URL TO YOUR DOMAIN
-    res.redirect(302, `https://pump.live-stream.fun/${ca}`);
+    res.redirect(302, `https://pump.funchats.live/${ca}`);
   }
 }
 
